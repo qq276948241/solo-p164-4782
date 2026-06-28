@@ -7,10 +7,6 @@ const {
   getLeaderOrders,
   confirmOrder,
   completeOrder,
-  submitReview,
-  getProductReviews,
-  getOrderReviewStatus,
-  getLeaderProductReviews,
 } = require('../controllers/orderController');
 const { authMiddleware, leaderOnly, residentOnly } = require('../middleware/auth');
 
@@ -24,10 +20,5 @@ router.post('/:id/cancel', authMiddleware, cancelOrder);
 router.get('/leader/all', authMiddleware, leaderOnly, getLeaderOrders);
 router.post('/:id/confirm', authMiddleware, leaderOnly, confirmOrder);
 router.post('/:id/complete', authMiddleware, leaderOnly, completeOrder);
-
-router.post('/review', authMiddleware, submitReview);
-router.get('/review/product/:product_id', authMiddleware, getProductReviews);
-router.get('/review/order/:order_id', authMiddleware, getOrderReviewStatus);
-router.get('/review/leader/all', authMiddleware, leaderOnly, getLeaderProductReviews);
 
 module.exports = router;

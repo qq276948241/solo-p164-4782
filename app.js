@@ -11,6 +11,7 @@ const pickupRoutes = require('./routes/pickup');
 const productRoutes = require('./routes/product');
 const orderRoutes = require('./routes/order');
 const groupBuyRoutes = require('./routes/groupBuy');
+const reviewRoutes = require('./routes/review');
 
 const app = express();
 
@@ -69,6 +70,12 @@ app.get('/', (req, res) => {
           my_joined: 'GET /api/group-buy/my-joined',
           leader_list: 'GET /api/group-buy/leader/all (leader)',
         },
+        reviews: {
+          submit: 'POST /api/review',
+          by_product: 'GET /api/review/product/:product_id',
+          by_order: 'GET /api/review/order/:order_id',
+          leader_all: 'GET /api/review/leader/all (leader)',
+        },
       },
     },
   });
@@ -79,6 +86,7 @@ app.use('/api/pickup', pickupRoutes);
 app.use('/api/product', productRoutes);
 app.use('/api/order', orderRoutes);
 app.use('/api/group-buy', groupBuyRoutes);
+app.use('/api/review', reviewRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

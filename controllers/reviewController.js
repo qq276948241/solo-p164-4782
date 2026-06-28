@@ -1,6 +1,14 @@
 const reviewService = require('../services/reviewService');
 const { success, sendError, errorCodes } = require('../utils/response');
 
+function handleServiceError(res, err, defaultErrorMessage) {
+  console.error('Review API error:', err);
+  if (err && err.code) {
+    return sendError(res, { code: err.code, message: err.message || defaultErrorMessage });
+  }
+  return sendError(res, errorCodes.DB_ERROR, defaultErrorMessage);
+}
+
 async function submitReview(req, res) {
   try {
     const userId = req.user.id;
@@ -8,11 +16,7 @@ async function submitReview(req, res) {
     const review = await reviewService.submitReview(userId, order_id, rating, content);
     return success(res, review, '评价提交成功');
   } catch (err) {
-    console.error('Submit review error:', err);
-    if (err.code) {
-      return sendError(res, { code: err.code, message: errorCodes.INTERNAL_ERROR.message }, err.message);
-    }
-    return sendError(res, errorCodes.DB_ERROR, '提交评价失败');
+    return handleServiceError(res, err, '提交评价失败');
   }
 }
 
@@ -22,11 +26,7 @@ async function getProductReviews(req, res) {
     const data = await reviewService.getProductReviewsData(product_id, req.query);
     return success(res, data);
   } catch (err) {
-    console.error('Get product reviews error:', err);
-    if (err.code) {
-      return sendError(res, { code: err.code, message: errorCodes.INTERNAL_ERROR.message }, err.message);
-    }
-    return sendError(res, errorCodes.DB_ERROR, '获取评价列表失败');
+    return handleServiceError(res, err, '获取评价列表失败');
   }
 }
 
@@ -40,11 +40,7 @@ async function getOrderReviewStatus(req, res) {
     );
     return success(res, data);
   } catch (err) {
-    console.error('Get order review status error:', err);
-    if (err.code) {
-      return sendError(res, { code: err.code, message: errorCodes.INTERNAL_ERROR.message }, err.message);
-    }
-    return sendError(res, errorCodes.DB_ERROR, '获取评价状态失败');
+    return handleServiceError(res, err, '获取评价状态失败');
   }
 }
 
@@ -54,11 +50,7 @@ async function getLeaderProductReviews(req, res) {
     const data = await reviewService.getLeaderReviewsData(leaderId, req.query);
     return success(res, data);
   } catch (err) {
-    console.error('Get leader product reviews error:', err);
-    if (err.code) {
-      return sendError(res, { code: err.code, message: errorCodes.INTERNAL_ERROR.message }, err.message);
-    }
-    return sendError(res, errorCodes.DB_ERROR, '获取评价列表失败');
+    return handleServiceError(res, err, '获取评价列表失败');
   }
 }
 

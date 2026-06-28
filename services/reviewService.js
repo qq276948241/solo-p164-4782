@@ -61,7 +61,9 @@ function assertOrderCompleted(order) {
 
 async function checkDuplicateReview(orderId, productId, conn) {
   const executor = conn || db;
-  const sql = 'SELECT id FROM reviews WHERE order_id = ? AND product_id = ?';
+  const sql = conn
+    ? 'SELECT id FROM reviews WHERE order_id = ? AND product_id = ? FOR UPDATE'
+    : 'SELECT id FROM reviews WHERE order_id = ? AND product_id = ?';
   const [existing] = conn
     ? await conn.execute(sql, [orderId, productId])
     : await executor.query(sql, [orderId, productId]);
@@ -73,9 +75,13 @@ async function checkDuplicateReview(orderId, productId, conn) {
 async function insertReview(order, userId, rating, content, conn) {
   const [result] = await conn.execute(
     `INSERT INTO reviews (order_id, product_id, user_id, rating, content)
-     VALUES (?, ?, ?, ?, ?)`,
-    [order.id, order.product_id, userId, rating, content]
+     SELECT ?, ?, ?, ?, ? FROM orders o
+     WHERE o.id = ? AND o.user_id = ?`,
+    [order.id, order.product_id, userId, rating, content, order.id, userId]
   );
+  if (result.affectedRows === 0) {
+    throw throwError(errorCodes.OWNER_FORBIDDEN, '无权限评价此订单');
+  }
   return result.insertId;
 }
 
@@ -193,22 +199,36 @@ async function submitReview(userId, orderId, rating, content) {
     await conn.beginTransaction();
 
     const order = await getOrderByIdWithLock(orderId, conn);
+
     assertOrderOwner(order, userId);
     assertOrderCompleted(order);
+
     await checkDuplicateReview(order.id, order.product_id, conn);
+
+    if (order.user_id !== userId) {
+      throw throwError(errorCodes.OWNER_FORBIDDEN, '无权限评价此订单');
+    }
 
     const reviewId = await insertReview(order, userId, validRating, validContent, conn);
 
     await conn.commit();
     return await getReviewById(reviewId);
   } catch (err) {
-    await conn.rollback();
-    if (err.code === 'ER_DUP_ENTRY') {
+    if (conn) {
+      try {
+        await conn.rollback();
+      } catch (rollbackErr) {
+        console.error('Rollback error:', rollbackErr);
+      }
+    }
+    if (err.code === 'ER_DUP_ENTRY' || err.code === errorCodes.REVIEW_DUPLICATE.code) {
       throw throwError(errorCodes.REVIEW_DUPLICATE);
     }
     throw err;
   } finally {
-    conn.release();
+    if (conn) {
+      conn.release();
+    }
   }
 }
 

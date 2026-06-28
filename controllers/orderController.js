@@ -464,6 +464,265 @@ async function completeOrder(req, res) {
   }
 }
 
+async function submitReview(req, res) {
+  const userId = req.user.id;
+  const { order_id, rating, content } = req.body;
+
+  if (!order_id || !rating) {
+    return error(res, '订单ID和评分为必填项');
+  }
+
+  const ratingNum = parseInt(rating, 10);
+  if (!ratingNum || ratingNum < 1 || ratingNum > 5) {
+    return error(res, '评分必须是1到5之间的整数');
+  }
+
+  if (content && content.length > 1000) {
+    return error(res, '评价内容不能超过1000字');
+  }
+
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [orders] = await conn.execute(
+      'SELECT * FROM orders WHERE id = ? FOR UPDATE',
+      [order_id]
+    );
+
+    if (orders.length === 0) {
+      await conn.rollback();
+      conn.release();
+      return notFound(res, '订单不存在');
+    }
+
+    const order = orders[0];
+    if (order.user_id !== userId) {
+      await conn.rollback();
+      conn.release();
+      return forbidden(res, '无权限评价此订单');
+    }
+
+    if (order.status !== 'completed') {
+      await conn.rollback();
+      conn.release();
+      return error(res, '订单尚未完成，暂不能评价');
+    }
+
+    const [existingReviews] = await conn.execute(
+      'SELECT id FROM reviews WHERE order_id = ? AND product_id = ?',
+      [order_id, order.product_id]
+    );
+    if (existingReviews.length > 0) {
+      await conn.rollback();
+      conn.release();
+      return error(res, '该订单已评价过，不能重复评价');
+    }
+
+    const [result] = await conn.execute(
+      `INSERT INTO reviews (order_id, product_id, user_id, rating, content)
+       VALUES (?, ?, ?, ?, ?)`,
+      [order_id, order.product_id, userId, ratingNum, content || null]
+    );
+
+    await conn.commit();
+
+    const [reviews] = await conn.execute(
+      `SELECT r.*, u.nickname as user_nickname
+       FROM reviews r
+       INNER JOIN users u ON r.user_id = u.id
+       WHERE r.id = ?`,
+      [result.insertId]
+    );
+
+    conn.release();
+    return success(res, reviews[0], '评价提交成功');
+  } catch (err) {
+    await conn.rollback();
+    conn.release();
+    console.error('Submit review error:', err);
+    if (err.code === 'ER_DUP_ENTRY') {
+      return error(res, '该订单已评价过，不能重复评价');
+    }
+    return error(res, '提交评价失败');
+  }
+}
+
+async function getProductReviews(req, res) {
+  const { product_id } = req.params;
+  const { page = 1, page_size = 10, min_rating, max_rating } = req.query;
+  const offset = (page - 1) * page_size;
+
+  if (!product_id) {
+    return error(res, '商品ID不能为空');
+  }
+
+  try {
+    const products = await db.query('SELECT id FROM products WHERE id = ?', [product_id]);
+    if (products.length === 0) {
+      return notFound(res, '商品不存在');
+    }
+
+    let whereSql = 'WHERE r.product_id = ?';
+    let countSql = 'SELECT COUNT(*) as total FROM reviews r WHERE r.product_id = ?';
+    const params = [product_id];
+    const countParams = [product_id];
+
+    if (min_rating) {
+      whereSql += ' AND r.rating >= ?';
+      countSql += ' AND r.rating >= ?';
+      params.push(parseInt(min_rating, 10));
+      countParams.push(parseInt(min_rating, 10));
+    }
+    if (max_rating) {
+      whereSql += ' AND r.rating <= ?';
+      countSql += ' AND r.rating <= ?';
+      params.push(parseInt(max_rating, 10));
+      countParams.push(parseInt(max_rating, 10));
+    }
+
+    const countResult = await db.query(countSql, countParams);
+    const total = countResult[0].total;
+
+    const list = await db.query(
+      `SELECT r.*, u.nickname as user_nickname,
+              o.id as order_id, o.quantity, o.created_at as order_created_at
+       FROM reviews r
+       INNER JOIN users u ON r.user_id = u.id
+       INNER JOIN orders o ON r.order_id = o.id
+       ${whereSql}
+       ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
+      [...params, parseInt(page_size, 10), parseInt(offset, 10)]
+    );
+
+    const stats = await db.query(
+      `SELECT COUNT(*) as total_count,
+              COALESCE(AVG(rating), 0) as avg_rating,
+              SUM(CASE WHEN rating = 5 THEN 1 ELSE 0 END) as rating_5_count,
+              SUM(CASE WHEN rating = 4 THEN 1 ELSE 0 END) as rating_4_count,
+              SUM(CASE WHEN rating = 3 THEN 1 ELSE 0 END) as rating_3_count,
+              SUM(CASE WHEN rating = 2 THEN 1 ELSE 0 END) as rating_2_count,
+              SUM(CASE WHEN rating = 1 THEN 1 ELSE 0 END) as rating_1_count
+       FROM reviews WHERE product_id = ?`,
+      [product_id]
+    );
+
+    return success(res, {
+      list,
+      total,
+      page: parseInt(page, 10),
+      page_size: parseInt(page_size, 10),
+      stats: {
+        total_count: stats[0].total_count,
+        avg_rating: parseFloat(parseFloat(stats[0].avg_rating).toFixed(1)),
+        rating_distribution: {
+          5: stats[0].rating_5_count,
+          4: stats[0].rating_4_count,
+          3: stats[0].rating_3_count,
+          2: stats[0].rating_2_count,
+          1: stats[0].rating_1_count,
+        },
+      },
+    });
+  } catch (err) {
+    console.error('Get product reviews error:', err);
+    return error(res, '获取评价列表失败');
+  }
+}
+
+async function getOrderReviewStatus(req, res) {
+  const { order_id } = req.params;
+  const userId = req.user.id;
+  const userRole = req.user.role;
+
+  if (!order_id) {
+    return error(res, '订单ID不能为空');
+  }
+
+  try {
+    const orders = await db.query(
+      'SELECT id, user_id, product_id, status FROM orders WHERE id = ?',
+      [order_id]
+    );
+
+    if (orders.length === 0) {
+      return notFound(res, '订单不存在');
+    }
+
+    const order = orders[0];
+    if (userRole !== 'leader' && order.user_id !== userId) {
+      return forbidden(res, '无权限查看此订单的评价状态');
+    }
+
+    const reviews = await db.query(
+      `SELECT r.*, u.nickname as user_nickname
+       FROM reviews r
+       INNER JOIN users u ON r.user_id = u.id
+       WHERE r.order_id = ? AND r.product_id = ?`,
+      [order_id, order.product_id]
+    );
+
+    return success(res, {
+      order_id: order.id,
+      order_status: order.status,
+      can_review: order.status === 'completed' && reviews.length === 0 && order.user_id === userId,
+      has_reviewed: reviews.length > 0,
+      review: reviews.length > 0 ? reviews[0] : null,
+    });
+  } catch (err) {
+    console.error('Get order review status error:', err);
+    return error(res, '获取评价状态失败');
+  }
+}
+
+async function getLeaderProductReviews(req, res) {
+  const leaderId = req.user.id;
+  const { page = 1, page_size = 10, product_id } = req.query;
+  const offset = (page - 1) * page_size;
+
+  try {
+    let whereSql = 'WHERE p.leader_id = ?';
+    let countSql = `SELECT COUNT(*) as total FROM reviews r
+                    INNER JOIN products p ON r.product_id = p.id
+                    WHERE p.leader_id = ?`;
+    const params = [leaderId];
+    const countParams = [leaderId];
+
+    if (product_id) {
+      whereSql += ' AND r.product_id = ?';
+      countSql += ' AND r.product_id = ?';
+      params.push(product_id);
+      countParams.push(product_id);
+    }
+
+    const countResult = await db.query(countSql, countParams);
+    const total = countResult[0].total;
+
+    const list = await db.query(
+      `SELECT r.*, p.name as product_name, p.image_url as product_image,
+              u.nickname as user_nickname,
+              o.id as order_id, o.quantity
+       FROM reviews r
+       INNER JOIN products p ON r.product_id = p.id
+       INNER JOIN users u ON r.user_id = u.id
+       INNER JOIN orders o ON r.order_id = o.id
+       ${whereSql}
+       ORDER BY r.created_at DESC LIMIT ? OFFSET ?`,
+      [...params, parseInt(page_size, 10), parseInt(offset, 10)]
+    );
+
+    return success(res, {
+      list,
+      total,
+      page: parseInt(page, 10),
+      page_size: parseInt(page_size, 10),
+    });
+  } catch (err) {
+    console.error('Get leader product reviews error:', err);
+    return error(res, '获取评价列表失败');
+  }
+}
+
 module.exports = {
   createOrder,
   getMyOrders,
@@ -472,4 +731,8 @@ module.exports = {
   getLeaderOrders,
   confirmOrder,
   completeOrder,
+  submitReview,
+  getProductReviews,
+  getOrderReviewStatus,
+  getLeaderProductReviews,
 };

@@ -2,6 +2,7 @@ CREATE DATABASE IF NOT EXISTS community_group_buy DEFAULT CHARACTER SET utf8mb4 
 
 USE community_group_buy;
 
+DROP TABLE IF EXISTS reviews;
 DROP TABLE IF EXISTS orders;
 DROP TABLE IF EXISTS group_buys;
 DROP TABLE IF EXISTS products;
@@ -108,6 +109,24 @@ CREATE TABLE orders (
     INDEX idx_group_buy (group_buy_id),
     INDEX idx_status (status),
     INDEX idx_order_no (order_no),
+    INDEX idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE reviews (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    order_id INT NOT NULL,
+    product_id INT NOT NULL,
+    user_id INT NOT NULL,
+    rating TINYINT NOT NULL,
+    content TEXT,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+    FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_order_product (order_id, product_id),
+    INDEX idx_product (product_id),
+    INDEX idx_user (user_id),
+    INDEX idx_rating (rating),
     INDEX idx_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
